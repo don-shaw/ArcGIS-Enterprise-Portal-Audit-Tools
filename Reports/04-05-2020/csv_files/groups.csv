@@ -1,0 +1,5 @@
+TITLE,OWNER,MANAGERS,USERS,ITEMS
+ds_test,portaladmin,portaladmin,,25
+gahhhh group,dshaw,dshaw,,0
+group1,portaladmin,portaladmin,"dshaw, jjones, jturco, jwright",23
+group2,portaladmin,portaladmin,"dhong, dshaw, jjones, jturco, ksmith, lili",23
