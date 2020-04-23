@@ -186,7 +186,7 @@ def process_plots(today_dir):
     plt.figure(figsize=(10, 10))
     sns.barplot(x='TITLE', y='VIEWS', palette='Set1', data=top_5_web_maps)
     plt.title('Five Most Viewed Web Maps: {0}'.format(datetime.now().strftime("%m/%d/%Y")))
-    plt.xticks(rotation=30)
+    plt.xticks(rotation=90)
     plt.tight_layout()
     plt.savefig(path.join(today_dir, 'figures', '{0}_top_5_web_maps'.format(datetime.now().strftime("%m%d%Y"))))
 
@@ -197,7 +197,7 @@ def process_plots(today_dir):
 
     sns.barplot(x='TITLE', y='VIEWS', palette='Set1', data=top_5_web_apps)
     plt.title('Five Most Viewed Web Apps: {0}'.format(datetime.now().strftime("%m/%d/%Y")))
-    plt.xticks(rotation=30)
+    plt.xticks(rotation=90)
     plt.tight_layout()
     plt.savefig(path.join(today_dir, 'figures', '{0}_top_5_web_apps'.format(datetime.now().strftime("%m%d%Y"))))
 
@@ -208,7 +208,7 @@ def process_plots(today_dir):
 
     sns.barplot(x='TITLE', y='ITEMS', palette='Set1', data=group_df.sort_values('ITEMS', ascending=False))
     plt.title('Groups With the Most Content: {0}'.format(datetime.now().strftime("%m/%d/%Y")))
-    plt.xticks(rotation=30)
+    plt.xticks(rotation=90)
     plt.tight_layout()
     plt.savefig(path.join(today_dir, 'figures', '{0}_top_groups'.format(datetime.now().strftime("%m%d%Y"))))
 
