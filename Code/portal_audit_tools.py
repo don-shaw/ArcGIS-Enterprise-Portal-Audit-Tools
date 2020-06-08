@@ -2,44 +2,37 @@ from arcgis.gis import GIS, RoleManager
 from datetime import datetime
 import pandas as pd
 import csv
-import docx
-from docx.shared import Inches
-from docx.enum.section import WD_ORIENT
-from docx.enum.section import WD_SECTION
-import matplotlib.pyplot as plt
-import seaborn as sns
 from os import path
 import os
 import configparser
 import logging
 import keyring
 import subprocess
-import win32com.client
 import warnings
+import arcpy
+import time
 warnings.filterwarnings('ignore')
-
-plt.style.use('fivethirtyeight')
 
 
 def create_directories(report_dir, today_dir):
     os.chdir(report_dir)
     if path.isdir(today_dir) is False:
-        logging.info('Creating the Report Directory...')
+        logging.info(f'Creating  {today_dir}...')
         os.mkdir(path.join(report_dir, today_dir))
         os.chdir(today_dir)
         os.mkdir('csv_files')
-        os.mkdir('figures')
 
 
 def generate_sys_log_report(slp_directory, today_dir, server_log_dir):
-    os.chdir(today_dir)
     if path.isdir(today_dir) is True:
+        os.chdir(today_dir)
         os.mkdir('sys_log_report')
         os.chdir(slp_directory)
         output_dir = path.join(today_dir, 'sys_log_report')
         cmd = (str(f"slp.exe -f AGSFS -i {server_log_dir} -d {output_dir} -eh now -sh 1080 -a complete -r spreadsheet -sbu true -o false, shell=True"))
         logging.info('Creating the System Log Report...')
         subprocess.call(cmd)
+
 
 
 def get_portal_data(url, cred_name, portal_username, today_dir):
@@ -61,9 +54,9 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
         item_dict = {}
 
         # Get users and write them to CSV
-        with open(path.join(today_dir, 'csv_files', 'user.csv'), 'w', newline='', encoding='utf-8') as user_csv:
+        with open(path.join(today_dir, 'csv_files', 'users.csv'), 'w', newline='', encoding='utf-8') as user_csv:
             user_file = csv.DictWriter(user_csv,
-                                       fieldnames=['USERNAME', 'EMAIL', 'ROLE', 'LAST LOGIN',
+                                       fieldnames=['USERNAME', 'EMAIL', 'ROLE', 'LAST_LOGIN',
                                                    'CREATED', 'GROUPS', 'ITEMS'])
             user_file.writeheader()
 
@@ -83,9 +76,9 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
                         user_dict['ROLE'] = role.name
 
                 if user.lastLogin != -1:
-                    user_dict['LAST LOGIN'] = datetime.fromtimestamp(float(user.lastLogin / 1000)).strftime('%m/%d/%Y')
+                    user_dict['LAST_LOGIN'] = datetime.fromtimestamp(float(user.lastLogin / 1000)).strftime('%m/%d/%Y')
                 else:
-                    user_dict['LAST LOGIN'] = -1
+                    user_dict['LAST_LOGIN'] = -1
                 user_dict['CREATED'] = datetime.fromtimestamp(float(user.created / 1000)).strftime('%m/%d/%Y')
 
                 user_groups = user.groups
@@ -129,8 +122,8 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
         # Get Items
         with open(path.join(today_dir, 'csv_files', 'items.csv'), 'w', newline='', encoding='utf-8') as items_csv:
             items_file = csv.DictWriter(items_csv, fieldnames=['TITLE', 'OWNER', 'ID', 'TYPE', 'AUTHORITATIVE',
-                                                               'TAGS', 'ACCESS', 'SHARED WITH ORG',
-                                                               'SHARED WITH EVERYONE', 'SHARED WITH GROUPS', 'VIEWS',
+                                                               'TAGS', 'ACCESS', 'SHARED_WITH_ORG',
+                                                               'SHARED_WITH_EVERYONE', 'SHARED_WITH_GROUPS', 'VIEWS',
                                                                'CREATED', 'HOMEPAGE', 'THUMBNAIL', 'DESCRIPTION', 'SIZE'])
 
             items_file.writeheader()
@@ -153,11 +146,11 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
                     # item_dict['dependent_on'] = item.dependent_upon()
                     # item_dict['dependent_to'] = item.dependent_to()
                     item_dict['HOMEPAGE'] = item.homepage
-                    item_dict['SHARED WITH EVERYONE'] = item.shared_with['everyone']
-                    item_dict['SHARED WITH ORG'] = item.shared_with['org']
+                    item_dict['SHARED_WITH_EVERYONE'] = item.shared_with['everyone']
+                    item_dict['SHARED_WITH_ORG'] = item.shared_with['org']
                     for g in item.shared_with['groups']:
                         item_groups.append(g.title)
-                    item_dict['SHARED WITH GROUPS'] = str(item_groups)[1:-1]
+                    item_dict['SHARED_WITH_GROUPS'] = str(item_groups)[1:-1]
                     # print(item_groups)
                     item_dict['ACCESS'] = item.access
                     item_dict['SIZE'] = item.size / 1000 / 1000
@@ -165,339 +158,110 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
                     items_file.writerow(item_dict)
 
         logging.info('Item File:    {0}'.format(path.join(today_dir, 'csv_files', 'items.csv')))
-        process_plots(today_dir)
         return groups
     except Exception as e:
         logging.error(e)
 
 
-def process_plots(today_dir):
-    # Create the dataframes used for the plots
-    items_df = pd.read_csv(path.join(today_dir, 'csv_files', 'items.csv'))
-    items_df = items_df[['TITLE', 'OWNER', 'TYPE', 'AUTHORITATIVE', 'TAGS', 'ACCESS',
-                        'SHARED WITH GROUPS', 'VIEWS', 'CREATED']]
-    group_df = pd.read_csv(path.join(today_dir, 'csv_files', 'groups.csv'))
-
-    logging.info('Processing Plots...')
-
-    # Make top 5 web maps
-    top_5_web_maps = items_df.loc[items_df['TYPE'] == 'Web Map'].sort_values('VIEWS', ascending=False).head(5)
-
-    plt.figure(figsize=(10, 10))
-    sns.barplot(x='TITLE', y='VIEWS', palette='Set1', data=top_5_web_maps)
-    plt.title('Five Most Viewed Web Maps: {0}'.format(datetime.now().strftime("%m/%d/%Y")))
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    plt.savefig(path.join(today_dir, 'figures', '{0}_top_5_web_maps'.format(datetime.now().strftime("%m%d%Y"))))
-
-    # Make top 5 web apps
-
-    top_5_web_apps = items_df.loc[items_df['TYPE'] == 'Web Mapping Application'].sort_values('VIEWS', ascending=False).head(5)
-    plt.figure(figsize=(10, 10))
-
-    sns.barplot(x='TITLE', y='VIEWS', palette='Set1', data=top_5_web_apps)
-    plt.title('Five Most Viewed Web Apps: {0}'.format(datetime.now().strftime("%m/%d/%Y")))
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    plt.savefig(path.join(today_dir, 'figures', '{0}_top_5_web_apps'.format(datetime.now().strftime("%m%d%Y"))))
-
-
-    # Make top 5 groups
-
-    plt.figure(figsize=(10, 10))
-
-    sns.barplot(x='TITLE', y='ITEMS', palette='Set1', data=group_df.sort_values('ITEMS', ascending=False))
-    plt.title('Groups With the Most Content: {0}'.format(datetime.now().strftime("%m/%d/%Y")))
-    plt.xticks(rotation=90)
-    plt.tight_layout()
-    plt.savefig(path.join(today_dir, 'figures', '{0}_top_groups'.format(datetime.now().strftime("%m%d%Y"))))
-
-def requests_last_two_weeks(throughput, today_dir):
-    plt.figure(figsize=(20,10))
-    plt.style.use('fivethirtyeight')
-
-    by_day = throughput.groupby('date')['HTTP 200'].sum().reset_index()
-    by_day = throughput[throughput['date'] > pd.Timedelta(-14, unit='d') + pd.datetime.today().date()]
-
-
-    sns.barplot(x='date', y='HTTP 200', color='blue', ci=False, alpha=.8, data=by_day)
-    plt.xticks(rotation=90)
-    plt.xlabel('Date', fontsize=20, fontweight='bold')
-    plt.ylabel('Requests', fontsize=20, fontweight='bold')
-    plt.xticks(fontsize=13)
-    plt.title('Total Number of Requests in the last 14 days', fontweight='bold')
-    plt.tight_layout()
-    plt.savefig(path.join(today_dir, 'figures', 'Requests in the last 14 days.png'))
-
-def most_popular_items_plot(most_popular_resources, today_dir):
-    plt.figure(figsize=(8,8))
-    plt.style.use('fivethirtyeight')
-
-    sns.barplot(x='Resource', y='Requests', ci=None, data = most_popular_resources.sort_values(by='Requests', ascending=False))
-    plt.xticks(rotation=90)
-    plt.xlabel('Resource', fontsize=20, fontweight='bold')
-    plt.ylabel('Requests', fontsize=20, fontweight='bold')
-    plt.xticks(fontsize=13)
-    plt.title('5 Most Popular Services in the Last 14 Days', fontweight='bold')
-    plt.tight_layout()
-    plt.legend('')
-    plt.savefig(path.join(today_dir, 'figures', 'Most Popular Resources.png'))
-
-
 def process_sys_log_report(today_dir):
-    report_dir = path.join(today_dir, 'sys_log_report')
-    os.chdir(report_dir)
-    for file in os.listdir(report_dir):
-        if file.endswith('xlsx'):
-            report = file
-    # System Log Parser dfs
-    stats_by_user = pd.read_excel(report, sheet_name='Statistics By User', header=4)
-    stats_by_resource = pd.read_excel(report, sheet_name='Statistics By Resource', header=4)
-    resources_by_time = pd.read_excel(report, sheet_name='Elapsed Time - All Resources', header=3)
-    throughput = pd.read_excel(report, sheet_name='Throughput per Minute', header=3)
-    throughput['date'] = pd.to_datetime(throughput['Date Time (Local Time)']).dt.to_period('D')
-    stats_by_user = stats_by_user[stats_by_user['User'].str.len() < 15]
-    resources_by_time = resources_by_time[resources_by_time['User'].str.len() < 15]
-    by_user = stats_by_user.groupby('User')['Count'].sum().reset_index()
-    by_user = by_user[by_user['User'] != '-']
-    most_active_users = by_user.head(10)
-    most_active_users['Requests'] = most_active_users['Count']
-    most_active_users = most_active_users.drop(columns='Count').sort_values(by='Requests', ascending=False)
-    items_df = pd.read_csv(path.join(today_dir, 'csv_files', 'items.csv'))
-    items_df = items_df[items_df['TYPE'].isin(['Map Service', 'Feature Service'])]
-    items_df.loc[items_df['TYPE'] == 'Map Service', 'Resource'] = items_df['TITLE'] + '.MapServer'
-    items_df.loc[items_df['TYPE'] == 'Feature Service', 'Resource'] = items_df['TITLE'] + '.FeatureServer'
-    last_accessed = resources_by_time.groupby('Resource')['Date Time (Local Time)'].max().reset_index()
-    last_accessed['LAST ACCESSED'] = pd.to_datetime(last_accessed['Date Time (Local Time)'])
-    last_accessed = last_accessed[last_accessed['Resource'].str.contains('GPServer') == False]
-    item_metrics = items_df.merge(right=last_accessed, how='outer', left_on='Resource', right_on='Resource')
-    has_not_been_accessed = item_metrics[
-        item_metrics['LAST ACCESSED'] < pd.datetime.today() - pd.Timedelta(14, unit='d')]
-    has_not_been_accessed = has_not_been_accessed[
-        ['TITLE', 'OWNER', 'TYPE', 'ACCESS', 'VIEWS', 'CREATED', 'LAST ACCESSED']]
-    has_not_been_accessed = has_not_been_accessed.dropna()
-    resources_by_time['date'] = pd.to_datetime(resources_by_time['Date Time (Local Time)'])
-    resource_by_day_total_requests = resources_by_time.groupby(['Resource', 'date'])['HTTP Code'].agg(
-        'count').reset_index()
-    resource_by_day_total_requests = resource_by_day_total_requests[resource_by_day_total_requests['Resource'].isin(
-        ['System/PublishingTools.GPServer', 'System/PublishingToolsEx.GPServer',
-         'Utilities/PrintingTools.GPServer']) == False]
-    resource_by_day_total_requests = resource_by_day_total_requests[
-        resource_by_day_total_requests['date'] > pd.Timedelta(-14, unit='d') + datetime.today()]
-    most_popular_resources = resource_by_day_total_requests.groupby('Resource')['HTTP Code'].sum().reset_index().head(5)
-    most_popular_resources['Requests'] = most_popular_resources['HTTP Code']
-    most_popular_resources = most_popular_resources.drop(columns='HTTP Code').sort_values(by='Requests',
-                                                                                          ascending=False).reset_index()
-    requests_last_two_weeks(throughput, today_dir)
-    most_popular_items_plot(most_popular_resources, today_dir)
 
-    return has_not_been_accessed, most_popular_resources, most_active_users
-
-
-def process_report(url, cred_name, portal_username, template, today_dir):
     try:
+        report_dir = path.join(today_dir, 'sys_log_report')
+        os.chdir(report_dir)
+        for file in os.listdir(report_dir):
+            if file.endswith('xlsx'):
+                report = file
+        # System Log Parser dfs
+        stats_by_user = pd.read_excel(report, sheet_name='Statistics By User', header=4)
+        stats_by_resource = pd.read_excel(report, sheet_name='Statistics By Resource', header=4)
+        resources_by_time = pd.read_excel(report, sheet_name='Elapsed Time - All Resources', header=3)
 
-        results = get_portal_data(url, cred_name, portal_username, today_dir)
-        has_not_been_accessed, most_popular_resources, most_active_users = process_sys_log_report(today_dir)
-
-        logging.info('Processing Report...')
-        # Get dataframes
-        user_df = pd.read_csv(path.join(today_dir, 'csv_files', 'user.csv'))
-        group_df = pd.read_csv(path.join(today_dir, 'csv_files', 'groups.csv'))
+        # Items DF
         items_df = pd.read_csv(path.join(today_dir, 'csv_files', 'items.csv'))
-        items_df = items_df[['TITLE', 'OWNER', 'TYPE', 'AUTHORITATIVE', 'TAGS', 'ACCESS',
-                             'SHARED WITH GROUPS', 'VIEWS', 'CREATED']]
-        items_no_tags_df = items_df[items_df['TAGS'].isnull()]
 
-        items_df['created_date'] = pd.to_datetime(items_df['CREATED'])
-        items_created_last_two_weeks = items_df[items_df['created_date'] > pd.Timedelta(-14, unit='d') + datetime.today()]
-        items_created_last_two_weeks = items_created_last_two_weeks.drop(columns='created_date')
+        # Throughput
+        throughput = pd.read_excel(report, sheet_name='Throughput per Minute', header=3)
+        throughput['date'] = pd.to_datetime(throughput['Date Time (Local Time)']).dt.to_period('D')
+        throughput['Date Time (Local Time)'] = pd.to_datetime(throughput['Date Time (Local Time)'])
+        throughput['Date Time (Local Time)'].dt.strftime('%m/%d/%Y %H:%M:%S')
+        throughput.rename(columns={'Date Time (Local Time)': 'Date_Time', 'Epoch Time': 'Epoch_Time',
+                                   'Requests/Minute': 'Requests_Minute', 'Requests/Seccond': 'Requests_Seccond',
+                                   'Avg Response Time': 'Avg_Response_Time', 'Min Response Time': 'Min_Response_Time',
+                                   'P95 Response Time': 'P95_Response_Time', 'P99 Response Time': 'P99_Response_Time',
+                                   'Max Response Time': 'Max_Response_Time', 'HTTP 200': 'HTTP_200', 'HTTP 300': 'HTTP_300',
+                                   'HTTP 400': 'HTTP_400', 'HTTP 500': 'HTTP_500'}, inplace=True)
+        throughput.to_csv(path.join(today_dir, 'csv_files', 'throughput.csv'), index=False)
+        logging.info('Throughput File:    {0}'.format(path.join(today_dir, 'csv_files', 'throughput.csv')))
 
-        # Make document
-        doc = docx.Document(template)
-        # title = doc.add_heading(f'Enterprise Community Portal Audit', 0)
-        # title.alignment = 1
-        # date = doc.add_paragraph(f'{datetime.now().strftime("%m/%d/%Y")}')
-        # date.alignment = 1
-        #
-        # doc.add_paragraph('')
-        # doc.add_paragraph('')
+        # Stats by user
+        stats_by_user = stats_by_user[stats_by_user['Resource'].str.contains('GPServer') == False]
+        stats_by_user = stats_by_user[stats_by_user['User'] != '-']
+        stats_by_user.rename(columns={'Count Pct': 'Count_Pct', 'Sum Pct': 'Sum_Pct'}, inplace=True)
+        stats_by_user.to_csv(path.join(today_dir, 'csv_files', 'stats_by_user.csv'), index=False)
+        logging.info('Throughput File:    {0}'.format(path.join(today_dir, 'csv_files', 'stats_by_user.csv')))
 
-        # Make User Table
-        doc.add_heading('Enterprise Portal Users', level=1)
-        user_table = doc.add_table(user_df.shape[0] + 1, user_df.shape[1], style='Light Grid Accent 5')
-        user_table.autofit = False
 
-        for j in range(user_df.shape[-1]):
-            user_table.cell(0, j).text = user_df.columns[j]
+        # Stats by resource
+        stats_by_resource.groupby('Resource')['Count'].sum().reset_index()
+        stats_by_resource = stats_by_resource[
+            stats_by_resource['Resource'].isin(['All Resources',
+                                                'Hover over each column header for description']) == False]
+        stats_by_resource = stats_by_resource[stats_by_resource['Capability'].isin(['GPServer']) == False]
+        stats_by_resource.rename(columns={'Count Pct': 'Count_Pct', 'Sum Pct': 'Sum_Pct'}, inplace=True)
 
-        for i in range(user_df.shape[0]):
-            for j in range(user_df.shape[-1]):
-                user_table.cell(i + 1, j).text = str(user_df.values[i, j])
+        stats_by_resource.to_csv(path.join(today_dir, 'csv_files', 'stats_by_resource.csv'), index=False)
+        logging.info('Stats by Resource File:    {0}'.format(path.join(today_dir, 'csv_files', 'stats_by_resource.csv')))
 
-        doc.add_page_break()
 
-        # Make Group Table
-        doc.add_heading('Enterprise Groups', level=1)
-        group_table = doc.add_table(group_df.shape[0] + 1, group_df.shape[1], style='Light Grid Accent 5')
-        group_table.autofit = False
-        for j in range(group_df.shape[-1]):
-            group_table.cell(0, j).text = group_df.columns[j]
+        # Item_Metrics
+        items_df = items_df[items_df['TYPE'].isin(['Map Service', 'Feature Service'])]
+        items_df.loc[items_df['TYPE'] == 'Map Service', 'Resource'] = items_df['TITLE'] + '.MapServer'
+        items_df.loc[items_df['TYPE'] == 'Feature Service', 'Resource'] = items_df['TITLE'] + '.FeatureServer'
+        last_accessed = resources_by_time.groupby('Resource')['Date Time (Local Time)'].max().reset_index()
+        last_accessed['LAST_ACCESSED'] = pd.to_datetime(last_accessed['Date Time (Local Time)']).dt.to_period('D')
+        last_accessed = last_accessed[last_accessed['Resource'].str.contains('GPServer') == False]
+        last_accessed.loc[last_accessed.Resource.str.contains('/'), 'Resource'] = last_accessed.Resource.str.split("/", expand=True)[1]
+        last_accessed.rename(columns={'Date Time (Local Time)': 'Date_Time'}, inplace=True)
+        item_metrics = items_df.merge(right=last_accessed, how='outer', left_on='Resource', right_on='Resource')
 
-        for i in range(group_df.shape[0]):
-            for j in range(group_df.shape[-1]):
-                group_table.cell(i + 1, j).text = str(group_df.values[i, j])
-        doc.add_paragraph('')
+        item_metrics.to_csv(path.join(today_dir, 'csv_files', 'item_metrics.csv'), index=False)
+        logging.info('Item Metrics File:    {0}'.format(path.join(today_dir, 'csv_files', 'item_metrics.csv')))
 
-        # List Each Group
-        # Make each group
-        doc.add_heading('Items by Group', level=1)
-        for g in results:
-            if len(g.content()) > 0:
-                doc.add_heading(f'{g.title}', level=2)
-                content = g.content()
-                gdf = pd.DataFrame(content)
+    except Exception as processing_error:
+        logging.error(processing_error)
 
-                gdf['authoritative'] = gdf['contentStatus']
-                gdf['views'] = gdf['numViews']
-                gdf = gdf[['title', 'owner', 'type', 'access', 'authoritative', 'views', 'tags', 'thumbnail']]
-                g_table = doc.add_table(gdf.shape[0] + 1, gdf.shape[1], style='Light Grid Accent 5')
-                g_table.autofit = False
-                for j in range(gdf.shape[-1]):
-                    g_table.cell(0, j).text = gdf.columns[j]
+def process_fgdb(fgdb, today_dir, items, groups, users, item_metrics, stats_by_resource, stats_by_user, throughput):
 
-                for i in range(gdf.shape[0]):
-                    for j in range(gdf.shape[-1]):
-                        g_table.cell(i + 1, j).text = str(gdf.values[i, j])
-            else:
-                pass
-            doc.add_paragraph('')
-        # Make Item Table
-        # current_section = doc.sections[-1]
-        # new_width, new_height = current_section.page_height, current_section.page_width
-        # new_section = doc.add_section(WD_SECTION.NEW_PAGE)
-        # new_section.orientation = WD_ORIENT.LANDSCAPE
-        # new_section.page_width = new_width
-        # new_section.page_height = new_height
-        # new_section.left_margin = Inches(0.25)
-        # new_section.right_margin = Inches(0.25)
+    users_csv = path.join(today_dir, 'csv_files', 'users.csv')
+    items_csv = path.join(today_dir, 'csv_files', 'items.csv')
+    groups_csv = path.join(today_dir, 'csv_files', 'groups.csv')
+    throughput_csv = path.join(today_dir, 'csv_files', 'throughput.csv')
+    item_metrics_csv = path.join(today_dir, 'csv_files', 'item_metrics.csv')
+    stats_by_user_csv = path.join(today_dir, 'csv_files', 'stats_by_user.csv')
+    stats_by_resource_csv = path.join(today_dir, 'csv_files', 'stats_by_resource.csv')
 
-        doc.add_heading('Portal Items Created in the Last 14 Days', level=1)
-        item_table = doc.add_table(items_created_last_two_weeks.shape[0] + 1, items_created_last_two_weeks.shape[1], style='Light Grid Accent 5')
-        item_table.autofit = False
-        for j in range(items_created_last_two_weeks.shape[-1]):
-            item_table.cell(0, j).text = items_created_last_two_weeks.columns[j]
+    try:
+        logging.info('Processing fgdb...')
 
-        for i in range(items_created_last_two_weeks.shape[0]):
-            for j in range(items_created_last_two_weeks.shape[-1]):
-                item_table.cell(i + 1, j).text = str(items_created_last_two_weeks.values[i, j])
+        #logging.info(fgdb)
+        arcpy.management.TruncateTable(users)
+        arcpy.management.TruncateTable(groups)
+        arcpy.management.TruncateTable(items)
+        arcpy.management.TruncateTable(throughput)
+        arcpy.management.TruncateTable(stats_by_resource)
+        arcpy.management.TruncateTable(stats_by_user)
+        arcpy.management.TruncateTable(item_metrics)
 
-        doc.add_page_break()
+        arcpy.Append_management(users_csv, users, "TEST")
+        arcpy.Append_management(groups_csv, groups, "TEST")
+        arcpy.Append_management(items_csv, items, "TEST")
+        arcpy.Append_management(throughput_csv, throughput, "TEST")
+        arcpy.Append_management(item_metrics_csv, item_metrics, "TEST")
+        arcpy.Append_management(stats_by_resource_csv, stats_by_resource, "TEST")
+        arcpy.Append_management(stats_by_user_csv, stats_by_user, "TEST")
 
-        # Items with no tags
-        doc.add_heading('Items With No Tags', level=1)
-        no_tag_table = doc.add_table(items_no_tags_df.shape[0] + 1,
-                                     items_no_tags_df.shape[1], style='Light Grid Accent 5')
-        no_tag_table.autofit = False
-        for j in range(items_no_tags_df.shape[-1]):
-            no_tag_table.cell(0, j).text = items_no_tags_df.columns[j]
-
-        for i in range(items_no_tags_df.shape[0]):
-            for j in range(items_no_tags_df.shape[-1]):
-                no_tag_table.cell(i + 1, j).text = str(items_no_tags_df.values[i, j])
-        doc.add_paragraph('')
-
-        # Inactive Items
-        doc.add_heading('Items Not Accessed in Last 14 Days', level=1)
-        not_accessed_table = doc.add_table(has_not_been_accessed.shape[0] + 1,
-                                     has_not_been_accessed.shape[1], style='Light Grid Accent 5')
-        not_accessed_table.autofit = False
-        for j in range(has_not_been_accessed.shape[-1]):
-            not_accessed_table.cell(0, j).text = has_not_been_accessed.columns[j]
-
-        for i in range(has_not_been_accessed.shape[0]):
-            for j in range(has_not_been_accessed.shape[-1]):
-                not_accessed_table.cell(i + 1, j).text = str(has_not_been_accessed.values[i, j])
-        doc.add_paragraph('')
-
-        # Most Popular Resources
-        doc.add_heading('Most Popular Resources in Last 14 Days', level=1)
-        most_popular_table = doc.add_table(most_popular_resources.shape[0] + 1,
-                                           most_popular_resources.shape[1], style='Light Grid Accent 5')
-        most_popular_table.autofit = False
-        for j in range(most_popular_resources.shape[-1]):
-            most_popular_table.cell(0, j).text = most_popular_resources.columns[j]
-
-        for i in range(most_popular_resources.shape[0]):
-            for j in range(most_popular_resources.shape[-1]):
-                most_popular_table.cell(i + 1, j).text = str(most_popular_resources.values[i, j])
-        doc.add_paragraph('')
-
-        # Most Popular Resources
-        doc.add_heading('Most Active Users in Last 14 Days', level=1)
-        active_user_table = doc.add_table(most_active_users.shape[0] + 1,
-                                           most_active_users.shape[1], style='Light Grid Accent 5')
-        active_user_table.autofit = False
-        for j in range(most_active_users.shape[-1]):
-            active_user_table.cell(0, j).text = most_active_users.columns[j]
-
-        for i in range(most_active_users.shape[0]):
-            for j in range(most_active_users.shape[-1]):
-                active_user_table.cell(i + 1, j).text = str(most_active_users.values[i, j])
-        doc.add_paragraph('')
-
-        # Start adding pictures
-
-        # current_section = doc.sections[-1]
-        # new_width, new_height = current_section.page_height, current_section.page_width
-        # new_section = doc.add_section(WD_SECTION.NEW_PAGE)
-        # new_section.orientation = WD_ORIENT.PORTRAIT
-        # new_section.page_width = new_width
-        # new_section.page_height = new_height
-
-        doc.add_heading('Top 5 Web Maps', level=1)
-        doc.add_picture(path.join(today_dir, 'Figures', '{0}_top_5_web_maps.png'.format(datetime.now().strftime("%m%d%Y"))),
-                        width=Inches(7))
-
-        doc.add_heading('Top 5 Web Apps', level=1)
-        doc.add_picture(path.join(today_dir, 'Figures', '{0}_top_5_web_apps.png'.format(datetime.now().strftime("%m%d%Y"))),
-                        width=Inches(7))
-
-        doc.add_heading('Top Groups by Content', level=1)
-        doc.add_picture(path.join(today_dir, 'Figures', '{0}_top_groups.png'.format(datetime.now().strftime("%m%d%Y"))),
-                        width=Inches(7))
-
-        doc.add_heading('Most Popular Resources', level=1)
-        doc.add_picture(path.join(today_dir, 'Figures', 'Most Popular Resources.png'),
-                        width=Inches(7))
-
-        current_section = doc.sections[-1]
-        new_width, new_height = current_section.page_height, current_section.page_width
-        new_section = doc.add_section(WD_SECTION.NEW_PAGE)
-        new_section.orientation = WD_ORIENT.LANDSCAPE
-        new_section.page_width = new_width
-        new_section.page_height = new_height
-        new_section.left_margin = Inches(0.25)
-        new_section.right_margin = Inches(0.25)
-
-        doc.add_heading('Portal Traffic in the Last 14 Days', level=1)
-        doc.add_picture(path.join(today_dir, 'Figures', 'Requests in the last 14 days.png'),
-                        width=Inches(10), height=Inches(5.5))
-
-        # save the doc
-        output_file = path.join(today_dir, '{0}_Audit.docx'.format(datetime.now().strftime("%m%d%Y")))
-        doc.save(output_file)
-
-        word = win32com.client.DispatchEx("Word.Application")
-        doc2 = word.Documents.Open(output_file)
-        doc2.TablesOfContents(1).Update()
-        doc2.Close(SaveChanges=True)
-        word.Quit()
-        logging.info('Report File:    {0}\n'.format(output_file))
-
-    except Exception as e:
-        logging.error(e)
-        print(e)
+    except Exception as error:
+        logging.error(error)
 
 
 if __name__ == '__main__':
@@ -518,22 +282,35 @@ if __name__ == '__main__':
     portal_cred_name = config.get('ALL', 'portal_cred_name')
     portal_cred_user = config.get('ALL', 'portal_cred_user')
     reports_directory = config.get('ALL', 'reports_directory')
-    today_directory = path.join(reports_directory, f'{datetime.now().strftime("%m-%d-%Y")}')
-    report_template = config.get('ALL', 'report_template')
+    #today_directory = path.join(reports_directory, f'{datetime.now().strftime("%m-%d-%Y")}')
+    today_directory = r"C:\Data\Reports\06-05-2020"
     system_log_parser = config.get('ALL', 'sys_log_directory')
     server_log_directory = config.get('ALL', 'server_log_directory')
+    file_geodatabase = config.get('ALL', 'file_geodatabase')
+    users_table =  config.get('ALL', 'users_table')
+    groups_table =  config.get('ALL', 'groups_table')
+    items_table =  config.get('ALL', 'items_table')
+    item_metrics_table =  config.get('ALL', 'item_metrics_table')
+    stats_by_user_table = config.get('ALL', 'stats_by_user_table')
+    stats_by_resource_table =  config.get('ALL', 'stats_by_resource_table')
+    throughput_table =  config.get('ALL', 'throughput_table')
+
 
     logging.info("***** Start time:  {0}\n".format(datetime.now().strftime("%A %B %d %I:%M:%S %p %Y")))
     logging.info('Portal URL:   {0}'.format(portal_url))
     logging.info('Windows Credential:   {0}'.format(portal_cred_name))
     logging.info('Portal Username:  {0}'.format(portal_cred_user))
     logging.info('Audit Report Directory:   {0}\n'.format(today_directory))
+    logging.info('FGDB:   {0}'.format(file_geodatabase))
 
     # Go!
     try:
         create_directories(reports_directory, today_directory)
         generate_sys_log_report(system_log_parser, today_directory, server_log_directory)
-        process_report(portal_url, portal_cred_name, portal_cred_user, report_template, today_directory)
+        get_portal_data(portal_url , portal_cred_name, portal_cred_user, today_directory)
+        process_sys_log_report(today_directory)
+        process_fgdb(file_geodatabase, today_directory, items_table, groups_table, users_table,
+                     item_metrics_table, stats_by_resource_table, stats_by_user_table, throughput_table)
     except Exception as e:
         print(e)
     logging.info("***** Completed time:  {0}\n".format(datetime.now().strftime("%A %B %d %I:%M:%S %p %Y")))
