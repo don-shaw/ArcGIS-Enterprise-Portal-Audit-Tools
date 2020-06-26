@@ -11,6 +11,7 @@ import subprocess
 import warnings
 import arcpy
 import time
+import shutil
 warnings.filterwarnings('ignore')
 
 
@@ -29,7 +30,7 @@ def generate_sys_log_report(slp_directory, today_dir, server_log_dir):
         os.mkdir('sys_log_report')
         os.chdir(slp_directory)
         output_dir = path.join(today_dir, 'sys_log_report')
-        cmd = (str(f"slp.exe -f AGSFS -i {server_log_dir} -d {output_dir} -eh now -sh 1080 -a complete -r spreadsheet -sbu true -o false, shell=True"))
+        cmd = (str(f"slp.exe -f AGSFS -i {server_log_dir} -d {output_dir} -eh now -sh 1440 -a complete -r spreadsheet -sbu true -o false, shell=True"))
         logging.info('Creating the System Log Report...')
         subprocess.call(cmd)
 
@@ -171,10 +172,12 @@ def process_sys_log_report(today_dir):
         for file in os.listdir(report_dir):
             if file.endswith('xlsx'):
                 report = file
+                
         # System Log Parser dfs
         stats_by_user = pd.read_excel(report, sheet_name='Statistics By User', header=4)
         stats_by_resource = pd.read_excel(report, sheet_name='Statistics By Resource', header=4)
-        resources_by_time = pd.read_excel(report, sheet_name='Elapsed Time - All Resources', header=3)
+        all_requests = pd.read_excel(report, sheet_name='Elapsed Time - All Resources', header=3)
+
 
         # Items DF
         items_df = pd.read_csv(path.join(today_dir, 'csv_files', 'items.csv'))
@@ -217,7 +220,7 @@ def process_sys_log_report(today_dir):
         items_df = items_df[items_df['TYPE'].isin(['Map Service', 'Feature Service'])]
         items_df.loc[items_df['TYPE'] == 'Map Service', 'Resource'] = items_df['TITLE'] + '.MapServer'
         items_df.loc[items_df['TYPE'] == 'Feature Service', 'Resource'] = items_df['TITLE'] + '.FeatureServer'
-        last_accessed = resources_by_time.groupby('Resource')['Date Time (Local Time)'].max().reset_index()
+        last_accessed = all_requests.groupby('Resource')['Date Time (Local Time)'].max().reset_index()
         last_accessed['LAST_ACCESSED'] = pd.to_datetime(last_accessed['Date Time (Local Time)']).dt.to_period('D')
         last_accessed = last_accessed[last_accessed['Resource'].str.contains('GPServer') == False]
         last_accessed.loc[last_accessed.Resource.str.contains('/'), 'Resource'] = last_accessed.Resource.str.split("/", expand=True)[1]
@@ -227,10 +230,35 @@ def process_sys_log_report(today_dir):
         item_metrics.to_csv(path.join(today_dir, 'csv_files', 'item_metrics.csv'), index=False)
         logging.info('Item Metrics File:    {0}'.format(path.join(today_dir, 'csv_files', 'item_metrics.csv')))
 
+
+        # All Requests
+
+        all_requests = all_requests[['Date Time (Local Time)',	'Epoch Time',	'Date Time (Day)',
+                                     'Date Time (Hour)', 'Date Time (Minute)', 'Domain',
+                                     'User', 'Server Machine',   'Content Length (Bytes)',
+                                     'HTTP Code',   'Elapsed Time (>= 0 sec)', 'Elapsed Time (Floor)',
+                                     'Resource', 'ArcGIS Method', 'ArcGIS Code',
+                                     'ArcGIS Type']]
+
+     
+        all_requests.rename(columns={'Date Time (Local Time)': 'Date_Time',  'Epoch Time': 'Epoch_Time', 'Date Time (Day)': 'Date_Time_Day',
+				    'Date Time (Hour)': 'Date_Time_Hour', 'Date Time (Minute)':'Date_Time_Minute',  'Domain':'Domain',
+                                    'User':'User',  'Server Machine': 'Server_Machine',
+                                    'Content Length (Bytes)':'Content_Length_Bits', 'HTTP Code': 'HTTP_Code',
+                                    'Elapsed Time (>= 0 sec)':'Elapsed_Time', 'Elapsed Time (Floor)':'Elapsed_Time_Floor',
+                                     'Resource': 'Resource',  'ArcGIS Method': 'ArcGIS_Method',
+                                    'ArcGIS Code': 'ArcGIS_Code', 'ArcGIS Type': 'ArcGIS_Type'}, inplace=True)
+
+
+
+
+        all_requests.to_csv(path.join(today_dir, 'csv_files', 'all_requests.csv'), index=False)
+        logging.info('All Requests File:  {0}'.format(path.join(today_dir, 'csv_files', 'all_requests.csv')))
+
     except Exception as processing_error:
         logging.error(processing_error)
 
-def process_fgdb(fgdb, today_dir, items, groups, users, item_metrics, stats_by_resource, stats_by_user, throughput):
+def process_fgdb(fgdb, today_dir):
 
     users_csv = path.join(today_dir, 'csv_files', 'users.csv')
     items_csv = path.join(today_dir, 'csv_files', 'items.csv')
@@ -239,30 +267,119 @@ def process_fgdb(fgdb, today_dir, items, groups, users, item_metrics, stats_by_r
     item_metrics_csv = path.join(today_dir, 'csv_files', 'item_metrics.csv')
     stats_by_user_csv = path.join(today_dir, 'csv_files', 'stats_by_user.csv')
     stats_by_resource_csv = path.join(today_dir, 'csv_files', 'stats_by_resource.csv')
+    all_requests_csv = path.join(today_dir, 'csv_files', 'all_requests.csv')
 
     try:
         logging.info('Processing fgdb...')
 
-        #logging.info(fgdb)
+
+        arcpy.env.workspace = fgdb
+
+        items = path.join(fgdb, 'items')
+
+        groups = path.join(fgdb,'groups')
+        users = path.join(fgdb,'users')
+        item_metrics = path.join(fgdb,'item_metrics')
+        stats_by_resource = path.join(fgdb,'stats_by_resource')
+        stats_by_user = path.join(fgdb,'stats_by_user')
+        throughput = path.join(fgdb,'throughput')
+        all_requests = path.join(fgdb, 'all_requests')
+
+
+        # Start truncating data
+
+        logging.info('Truncating users...')
         arcpy.management.TruncateTable(users)
+       
+        logging.info('Truncating groups...')
         arcpy.management.TruncateTable(groups)
+        
+        logging.info('Truncating items...')
         arcpy.management.TruncateTable(items)
+
+
+        logging.info('Truncating throughput...')
         arcpy.management.TruncateTable(throughput)
+        
+        
+        logging.info('Truncating stats_by_resource...')
         arcpy.management.TruncateTable(stats_by_resource)
+        
+        
+        logging.info('Truncating stats_by_user...')
         arcpy.management.TruncateTable(stats_by_user)
+        
+        logging.info('Truncating item_metrics...')
         arcpy.management.TruncateTable(item_metrics)
 
-        arcpy.Append_management(users_csv, users, "TEST")
-        arcpy.Append_management(groups_csv, groups, "TEST")
-        arcpy.Append_management(items_csv, items, "TEST")
-        arcpy.Append_management(throughput_csv, throughput, "TEST")
-        arcpy.Append_management(item_metrics_csv, item_metrics, "TEST")
-        arcpy.Append_management(stats_by_resource_csv, stats_by_resource, "TEST")
-        arcpy.Append_management(stats_by_user_csv, stats_by_user, "TEST")
+        logging.info('Truncating all_requests...')
+        arcpy.management.TruncateTable(all_requests)
+
+
+
+        
+
+        # Start appending data
+        
+
+        logging.info('Appending users')
+        arcpy.Append_management(users_csv, users, "NO_TEST")
+        
+        
+        logging.info('Appending groups')
+        arcpy.Append_management(groups_csv, groups, "NO_TEST")
+        
+        logging.info('Appending items')
+        arcpy.Append_management(items_csv, items, "NO_TEST")
+       
+        
+        logging.info('Appending throughput')
+        arcpy.Append_management(throughput_csv, throughput, "NO_TEST")
+        
+
+        logging.info('Appending item_metrics')
+        arcpy.Append_management(item_metrics_csv, item_metrics, "NO_TEST")
+        
+        
+        logging.info('Appending stats_by_resource')
+        arcpy.Append_management(stats_by_resource_csv, stats_by_resource, "NO_TEST")
+        
+        logging.info('Appending stats_by_user')
+        arcpy.Append_management(stats_by_user_csv, stats_by_user, "NO_TEST")
+
+        logging.info('Appending all_requests')
+        arcpy.Append_management(all_requests_csv, all_requests, "NO_TEST")
+
+        
+        arcpy.Compact_management(fgdb)
+        logging.info('Compacting fgdb')
 
     except Exception as error:
         logging.error(error)
 
+
+def copy_fgdb_to_prod(staging_fgdb, prod_fgdb):
+
+    try:
+        logging.info('Copying staging fgdb to prod...')
+        if os.path.exists(prod_fgdb):
+            shutil.rmtree(prod_fgdb, ignore_errors=True)
+            shutil.copytree(staging_fgdb, prod_fgdb)
+
+    except Exception as error:
+        logging.error(error)
+
+def cleanup(number_of_days, directory):
+
+    logging.info('Cleaning up files older than 7 days...')
+    current_time = time.time()
+
+    for f in os.listdir(directory):
+        f = os.path.join(directory, f)
+        if os.stat(f).st_mtime < current_time - 7 * 86400:
+            shutil.rmtree(f)
+          #  logging.info(f'Deleted {f}') 
+    
 
 if __name__ == '__main__':
 
@@ -282,26 +399,21 @@ if __name__ == '__main__':
     portal_cred_name = config.get('ALL', 'portal_cred_name')
     portal_cred_user = config.get('ALL', 'portal_cred_user')
     reports_directory = config.get('ALL', 'reports_directory')
-    #today_directory = path.join(reports_directory, f'{datetime.now().strftime("%m-%d-%Y")}')
-    today_directory = r"C:\Data\Reports\06-05-2020"
+    today_directory = path.join(reports_directory, f'{datetime.now().strftime("%m-%d-%Y")}')
     system_log_parser = config.get('ALL', 'sys_log_directory')
     server_log_directory = config.get('ALL', 'server_log_directory')
     file_geodatabase = config.get('ALL', 'file_geodatabase')
-    users_table =  config.get('ALL', 'users_table')
-    groups_table =  config.get('ALL', 'groups_table')
-    items_table =  config.get('ALL', 'items_table')
-    item_metrics_table =  config.get('ALL', 'item_metrics_table')
-    stats_by_user_table = config.get('ALL', 'stats_by_user_table')
-    stats_by_resource_table =  config.get('ALL', 'stats_by_resource_table')
-    throughput_table =  config.get('ALL', 'throughput_table')
+    staging_file_geodatabase = config.get('ALL', 'staging_file_geodatabase')
+   
 
 
     logging.info("***** Start time:  {0}\n".format(datetime.now().strftime("%A %B %d %I:%M:%S %p %Y")))
     logging.info('Portal URL:   {0}'.format(portal_url))
     logging.info('Windows Credential:   {0}'.format(portal_cred_name))
     logging.info('Portal Username:  {0}'.format(portal_cred_user))
-    logging.info('Audit Report Directory:   {0}\n'.format(today_directory))
-    logging.info('FGDB:   {0}'.format(file_geodatabase))
+    logging.info('Audit Report Directory:   {0}'.format(today_directory))
+    logging.info('Staging FGDB:         {0}'.format(staging_file_geodatabase))
+    logging.info('FGDB:   {0}\n'.format(file_geodatabase))
 
     # Go!
     try:
@@ -309,8 +421,10 @@ if __name__ == '__main__':
         generate_sys_log_report(system_log_parser, today_directory, server_log_directory)
         get_portal_data(portal_url , portal_cred_name, portal_cred_user, today_directory)
         process_sys_log_report(today_directory)
-        process_fgdb(file_geodatabase, today_directory, items_table, groups_table, users_table,
-                     item_metrics_table, stats_by_resource_table, stats_by_user_table, throughput_table)
+        process_fgdb(file_geodatabase, today_directory)
+        #copy_fgdb_to_prod(staging_file_geodatabase, file_geodatabase)
+        cleanup(7, reports_directory)
+     
     except Exception as e:
         print(e)
     logging.info("***** Completed time:  {0}\n".format(datetime.now().strftime("%A %B %d %I:%M:%S %p %Y")))
