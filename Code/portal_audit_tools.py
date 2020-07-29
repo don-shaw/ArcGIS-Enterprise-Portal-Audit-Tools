@@ -11,8 +11,21 @@ import subprocess
 import warnings
 import arcpy
 import time
+import smtplib
+from email.mime.text import MIMEText
+import base64
 import shutil
 warnings.filterwarnings('ignore')
+
+
+def send_email(server, sender, recipient, subject, body):
+    msg = MIMEText(body)
+    msg['From'] = sender
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    s = smtplib.SMTP(server)
+    s.send_message(msg)
+    s.quit()
 
 
 def create_directories(report_dir, today_dir):
@@ -35,17 +48,120 @@ def generate_sys_log_report(slp_directory, today_dir, server_log_dir):
         subprocess.call(cmd)
 
 
-
-def get_portal_data(url, cred_name, portal_username, today_dir):
-
+def connect_to_portal(url, cred_name, portal_user):
     try:
         # Get credentials
-        portal_password = keyring.get_password(cred_name, portal_username)
-        portal = GIS(url, portal_username, portal_password, verify_cert=False)
+        portal_password = keyring.get_password(cred_name, portal_user)
+        portal_connection = GIS(url, portal_user, portal_password, verify_cert=False)
+        return portal_connection
+    except Exception as e:
+        logging.exception(e)
+
+
+def validate_title_13(portal, title_13_thumbnail_id, server, sender):
+    titled_data = portal.content.search(query='title 13', max_items=10000)
+
+    # Get the Title 13 logo
+    titled_item = portal.content.get(title_13_thumbnail_id)
+    titled_image_bytes = titled_item.get_thumbnail()
+    titled_b64_item = base64.b64encode(titled_image_bytes)
+
+    # Check each item in the titled data list
+    for item in titled_data:
+
+        title = item.title
+        owner = portal.users.get(item.owner)
+        email = owner.email
+        homepage = item.homepage
+
+        #  Check the thumbnail
+        if item.thumbnail is not None:
+            thumbnail = item.thumbnail
+            image_bytes = item.get_thumbnail()
+            b64_item = base64.b64encode(image_bytes)
+            match = b64_item == titled_b64_item
+
+            if match is False:
+                subject = "{0} is not compliant with portal governance".format(item.title)
+
+                body = """
+                    This item does not have the correct thumbnail according to Title 13 guidelines
+                    
+                        Item Owner: {0}
+                        Item ID: {1}
+                        Item URL: {2}
+
+                    Please use the Title 13 thumbnail located at {3}""".format(item.owner, item.id, item.homepage,
+                                                                               titled_item.homepage)
+                send_email(server, sender, email, subject, body)
+
+        # Check the description
+        if item.description is None:
+            subject = "{0} is not compliant with portal governance".format(item.title)
+            body = """
+                This item does not contain a valid description.
+
+                    Item Owner: {0}
+                    Item ID: {1}
+                    Item URL: {2}
+
+                Please ensure that you are using a detailed description for titled data
+                """.format(item.owner, item.id, item.homepage)
+            send_email(server, sender, email, subject, body)
+
+        if item.description is not None:
+            if len(item.description) <= 25:
+                subject = "{0} is not compliant with portal governance".format(item.title)
+                body = """
+                    The description of this item is not detailed enough
+
+                        Item Owner: {0}
+                        Item ID: {1}
+                        Item URL: {2}
+
+                    Please make the item description longer
+                         """.format(item.owner, item.id, item.homepage)
+                send_email(server, sender, email, subject, body)
+
+        # Check the terms of use
+        if item.licenseInfo is None:
+            # print(item.title)
+            subject = "{0} is not compliant with portal governance".format(item.title)
+            body = """
+                This item does not contain terms of use.
+                
+                    Item Owner: {0}
+                    Item ID: {1}
+                    Item URL: {2}
+
+                Please ensure that you are using the correct terms of use for titled data
+
+                """.format(item.owner, item.id, item.homepage)
+            send_email(server, sender, email, subject, body)
+
+        if item.licenseInfo is not None:
+            subject = "{0} is not compliant with portal governance".format(item.title)
+            check = item.licenseInfo == 'This report contains information, the release of which is protected by Title 13, United States Code (U.S.C.) and is for Bureau of the Census official use only. Moreover, Census Bureau policy DS 018 prohibits the browsing of files in which individuals or businesses may be directly or indirectly identified, except for work-related purposes.'
+            if check == False:
+                body = """
+                        This item is not using the correct terms of use for Title 13 data.
+                            
+                            Item Owner: {0}
+                            Item ID: {1}
+                            Item URL: {2}
+
+                        Please fix this immediately
+                            """.format(item.owner, item.id, item.homepage)
+                send_email(server, sender, email, subject, body)
+
+
+def get_portal_data(portal, today_dir):
+
+    try:
         logging.info('Querying the Enterprise Portal...')
 
         # Query users, groups, and items
-        users = portal.users.search('!username:esri_*')
+        users = portal.users.search('!USER:esri_*')
         groups = portal.groups.search('!owner:esri_*')
         all_items = portal.content.search(query='!owner:esri*', max_items=10000)
 
@@ -65,7 +181,7 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
             roles = rm.all()
 
             for user in users:
-                # if user.idpUsername is not None:
+                # if user.idpUSER is not None:
                 num_items = 0
 
                 user_dict['USERNAME'] = user.username
@@ -105,7 +221,7 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
 
         # Get Groups
         with open(path.join(today_dir, 'csv_files', 'groups.csv'), 'w', newline='', encoding='utf-8') as group_csv:
-            groups_file = csv.DictWriter(group_csv, fieldnames=['TITLE', 'OWNER', 'MANAGERS', 'USERS', 'ITEMS'])
+            groups_file = csv.DictWriter(group_csv, fieldnames=['TITLE', 'OWNER', 'MANAGERS', 'USERS', 'NUM_ADMINS', 'NUM_USERS', 'ITEMS'])
             groups_file.writeheader()
 
             for g in groups:
@@ -116,6 +232,10 @@ def get_portal_data(url, cred_name, portal_username, today_dir):
                 group_dict['OWNER'] = members['owner']
                 group_dict['MANAGERS'] = str(str(members['admins']).replace("'", ''))[1:-1]
                 group_dict['USERS'] = str(str(members['users']).replace("'", ''))[1:-1]
+
+                group_dict['NUM_ADMINS'] = len(members['admins'])
+                group_dict['NUM_USERS'] = len(members['users'])
+                                
                 group_dict['ITEMS'] = len(g.content())
                 groups_file.writerow(group_dict)
         logging.info('Group File:    {0}'.format(path.join(today_dir, 'csv_files', 'groups.csv')))
@@ -199,7 +319,7 @@ def process_sys_log_report(today_dir):
         # Stats by user
         stats_by_user = stats_by_user[stats_by_user['Resource'].str.contains('GPServer') == False]
         stats_by_user = stats_by_user[stats_by_user['User'] != '-']
-        stats_by_user.rename(columns={'Count Pct': 'Count_Pct', 'Sum Pct': 'Sum_Pct'}, inplace=True)
+        stats_by_user.rename(columns={'User': 'USER', 'Count Pct': 'Count_Pct', 'Sum Pct': 'Sum_Pct'}, inplace=True)
         stats_by_user.to_csv(path.join(today_dir, 'csv_files', 'stats_by_user.csv'), index=False)
         logging.info('Throughput File:    {0}'.format(path.join(today_dir, 'csv_files', 'stats_by_user.csv')))
 
@@ -234,7 +354,7 @@ def process_sys_log_report(today_dir):
         # All Requests
 
         all_requests = all_requests[['Date Time (Local Time)',	'Epoch Time',	'Date Time (Day)',
-                                     'Date Time (Hour)', 'Date Time (Minute)', 'Domain',
+                                     'Date Time (Hour)', 'Date Time (Minute)',
                                      'User', 'Server Machine',   'Content Length (Bytes)',
                                      'HTTP Code',   'Elapsed Time (>= 0 sec)', 'Elapsed Time (Floor)',
                                      'Resource', 'ArcGIS Method', 'ArcGIS Code',
@@ -242,16 +362,14 @@ def process_sys_log_report(today_dir):
 
      
         all_requests.rename(columns={'Date Time (Local Time)': 'Date_Time',  'Epoch Time': 'Epoch_Time', 'Date Time (Day)': 'Date_Time_Day',
-				    'Date Time (Hour)': 'Date_Time_Hour', 'Date Time (Minute)':'Date_Time_Minute',  'Domain':'Domain',
+				    'Date Time (Hour)': 'Date_Time_Hour', 'Date Time (Minute)':'Date_Time_Minute',
                                     'User':'User',  'Server Machine': 'Server_Machine',
                                     'Content Length (Bytes)':'Content_Length_Bits', 'HTTP Code': 'HTTP_Code',
                                     'Elapsed Time (>= 0 sec)':'Elapsed_Time', 'Elapsed Time (Floor)':'Elapsed_Time_Floor',
                                      'Resource': 'Resource',  'ArcGIS Method': 'ArcGIS_Method',
                                     'ArcGIS Code': 'ArcGIS_Code', 'ArcGIS Type': 'ArcGIS_Type'}, inplace=True)
 
-
-
-
+        all_requests = all_requests[all_requests['Resource'].str.contains('MapServer', 'FeatureServer') == True]
         all_requests.to_csv(path.join(today_dir, 'csv_files', 'all_requests.csv'), index=False)
         logging.info('All Requests File:  {0}'.format(path.join(today_dir, 'csv_files', 'all_requests.csv')))
 
@@ -271,12 +389,9 @@ def process_fgdb(fgdb, today_dir):
 
     try:
         logging.info('Processing fgdb...')
-
-
         arcpy.env.workspace = fgdb
 
         items = path.join(fgdb, 'items')
-
         groups = path.join(fgdb,'groups')
         users = path.join(fgdb,'users')
         item_metrics = path.join(fgdb,'item_metrics')
@@ -287,7 +402,6 @@ def process_fgdb(fgdb, today_dir):
 
 
         # Start truncating data
-
         logging.info('Truncating users...')
         arcpy.management.TruncateTable(users)
        
@@ -297,14 +411,11 @@ def process_fgdb(fgdb, today_dir):
         logging.info('Truncating items...')
         arcpy.management.TruncateTable(items)
 
-
         logging.info('Truncating throughput...')
         arcpy.management.TruncateTable(throughput)
-        
-        
+
         logging.info('Truncating stats_by_resource...')
         arcpy.management.TruncateTable(stats_by_resource)
-        
         
         logging.info('Truncating stats_by_user...')
         arcpy.management.TruncateTable(stats_by_user)
@@ -316,30 +427,21 @@ def process_fgdb(fgdb, today_dir):
         arcpy.management.TruncateTable(all_requests)
 
 
-
-        
-
         # Start appending data
-        
-
         logging.info('Appending users')
         arcpy.Append_management(users_csv, users, "NO_TEST")
-        
-        
+
         logging.info('Appending groups')
         arcpy.Append_management(groups_csv, groups, "NO_TEST")
         
         logging.info('Appending items')
         arcpy.Append_management(items_csv, items, "NO_TEST")
-       
-        
+
         logging.info('Appending throughput')
         arcpy.Append_management(throughput_csv, throughput, "NO_TEST")
-        
 
         logging.info('Appending item_metrics')
         arcpy.Append_management(item_metrics_csv, item_metrics, "NO_TEST")
-        
         
         logging.info('Appending stats_by_resource')
         arcpy.Append_management(stats_by_resource_csv, stats_by_resource, "NO_TEST")
@@ -350,24 +452,13 @@ def process_fgdb(fgdb, today_dir):
         logging.info('Appending all_requests')
         arcpy.Append_management(all_requests_csv, all_requests, "NO_TEST")
 
-        
         arcpy.Compact_management(fgdb)
         logging.info('Compacting fgdb')
 
     except Exception as error:
-        logging.error(error)
+        logging.exception(error)
 
 
-def copy_fgdb_to_prod(staging_fgdb, prod_fgdb):
-
-    try:
-        logging.info('Copying staging fgdb to prod...')
-        if os.path.exists(prod_fgdb):
-            shutil.rmtree(prod_fgdb, ignore_errors=True)
-            shutil.copytree(staging_fgdb, prod_fgdb)
-
-    except Exception as error:
-        logging.error(error)
 
 def cleanup(number_of_days, directory):
 
@@ -378,8 +469,8 @@ def cleanup(number_of_days, directory):
         f = os.path.join(directory, f)
         if os.stat(f).st_mtime < current_time - 7 * 86400:
             shutil.rmtree(f)
-          #  logging.info(f'Deleted {f}') 
-    
+          #  logging.info(f'Deleted {f}')
+
 
 if __name__ == '__main__':
 
@@ -394,7 +485,6 @@ if __name__ == '__main__':
 
     config = configparser.ConfigParser()
     config.read(path.join(log_dir, 'config.ini'))
-
     portal_url = config.get('ALL', 'portal_url')
     portal_cred_name = config.get('ALL', 'portal_cred_name')
     portal_cred_user = config.get('ALL', 'portal_cred_user')
@@ -403,29 +493,33 @@ if __name__ == '__main__':
     system_log_parser = config.get('ALL', 'sys_log_directory')
     server_log_directory = config.get('ALL', 'server_log_directory')
     file_geodatabase = config.get('ALL', 'file_geodatabase')
-    staging_file_geodatabase = config.get('ALL', 'staging_file_geodatabase')
-   
-
+    title_13_thumbnail_id = config.get('ALL', 'title_13_thumbnail')
+    server = config.get('ALL', 'server')
+    sender = config.get('ALL', 'sender')
 
     logging.info("***** Start time:  {0}\n".format(datetime.now().strftime("%A %B %d %I:%M:%S %p %Y")))
     logging.info('Portal URL:   {0}'.format(portal_url))
     logging.info('Windows Credential:   {0}'.format(portal_cred_name))
-    logging.info('Portal Username:  {0}'.format(portal_cred_user))
+    logging.info('Portal USER:  {0}'.format(portal_cred_user))
     logging.info('Audit Report Directory:   {0}'.format(today_directory))
-    logging.info('Staging FGDB:         {0}'.format(staging_file_geodatabase))
+
     logging.info('FGDB:   {0}\n'.format(file_geodatabase))
 
+    
     # Go!
     try:
         create_directories(reports_directory, today_directory)
         generate_sys_log_report(system_log_parser, today_directory, server_log_directory)
-        get_portal_data(portal_url , portal_cred_name, portal_cred_user, today_directory)
+        portal_connection = connect_to_portal(portal_url, portal_cred_name, portal_cred_user)
+        get_portal_data(portal_connection, today_directory)
+        validate_title_13(portal_connection, title_13_thumbnail_id, server, sender)
         process_sys_log_report(today_directory)
         process_fgdb(file_geodatabase, today_directory)
-        #copy_fgdb_to_prod(staging_file_geodatabase, file_geodatabase)
         cleanup(7, reports_directory)
-     
+
     except Exception as e:
         print(e)
+        logging.exception(e)
+
     logging.info("***** Completed time:  {0}\n".format(datetime.now().strftime("%A %B %d %I:%M:%S %p %Y")))
     logging.shutdown()
